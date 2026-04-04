@@ -1,4 +1,6 @@
-﻿namespace RadiantConnect.SocketServices.XMPP.XMPPManagement
+﻿#pragma warning disable CA1031
+
+namespace RadiantConnect.SocketServices.XMPP.XMPPManagement
 {
 	/// <summary>
 	/// Represents a low-level socket handle for sending and receiving
@@ -8,7 +10,7 @@
 	/// This class abstracts direct stream access and provides helper methods
 	/// for safely writing XMPP XML stanzas to the appropriate stream.
 	/// </remarks>
-	public class XMPPSocketHandle(Stream? incomingStream, Stream outgoingStream) : IDisposable
+	public class XMPPSocketHandle(Stream? incomingStream, Stream outgoingStream, IEnumerable<Func<InterceptContext, Task>> clientIntercepts, IEnumerable<Func<InterceptContext, Task>> serverIntercepts) : IDisposable
 	{
 		private readonly CancellationTokenSource _cancellationTokenSource = new();
 		internal bool DoBreak;
@@ -16,17 +18,26 @@
 
 		internal event InternalMessage? OnClientMessage;
 		internal event InternalMessage? OnServerMessage;
-
+		
 		/// <summary>
-		/// Disposes the socket connection and disconnects from the server.
+		/// Disposes the socket connection and disconnects from the MITM XMPP server.
 		/// </summary>
 		public void Dispose()
 		{
+			Dispose(true);
+			GC.SuppressFinalize(this);
+		}
+
+		/// <summary>
+		/// Disposes the socket connection and disconnects from the MITM XMPP server.
+		/// </summary>
+		protected virtual void Dispose(bool disposing)
+		{
+			if (!disposing) return;
 			_cancellationTokenSource.Cancel();
 			try { incomingStream?.Dispose(); } catch { /* ignored */ }
 			try { outgoingStream.Dispose(); } catch { /* ignored */ }
 			_cancellationTokenSource.Dispose();
-			GC.SuppressFinalize(this);
 		}
 
 		internal void Initiate()
@@ -40,22 +51,34 @@
 			try
 			{
 				int byteCount;
-				byte[] bytes = new byte[8192];
+				byte[] bytes = new byte[8192 * 2];
 				do
 				{
 					if (incomingStream is null) break;
 					byteCount = await incomingStream.ReadAsync(bytes, _cancellationTokenSource.Token).ConfigureAwait(false);
 					string content = Encoding.UTF8.GetString(bytes, 0, byteCount);
-					await outgoingStream.WriteAsync(bytes.AsMemory(0, byteCount), _cancellationTokenSource.Token).ConfigureAwait(false);
+
+					InterceptContext ctx = new()
+					{
+						Bytes = bytes,
+						ByteCount = byteCount,
+						Content = content
+					};
+
+					await RunIntercepts(clientIntercepts, ctx).ConfigureAwait(false);
+
+					if (ctx.Action == InterceptAction.Forward)
+					{
+						await outgoingStream.WriteAsync(ctx.Bytes.AsMemory(0, ctx.ByteCount), _cancellationTokenSource.Token).ConfigureAwait(false);
+						OnClientMessage?.Invoke(ctx.Content);
+					}
+
 					Array.Clear(bytes);
-					OnClientMessage?.Invoke(content);
 				} while (byteCount != 0 && !DoBreak);
 			}
-			catch (OperationCanceledException) {/**/}
-			catch (IOException)
-			{
-				DoBreak = true;
-			}
+			catch (OperationCanceledException) { }
+			catch (IOException) { }
+			finally { DoBreak = true; }
 		}
 
 		internal async Task OutgoingHandler()
@@ -63,21 +86,44 @@
 			try
 			{
 				int byteCount;
-				byte[] bytes = new byte[8192];
+				byte[] bytes = new byte[8192 * 2];
 				do
 				{
 					if (incomingStream is null) break;
 					byteCount = await outgoingStream.ReadAsync(bytes, _cancellationTokenSource.Token).ConfigureAwait(false);
 					string content = Encoding.UTF8.GetString(bytes, 0, byteCount);
-					await incomingStream.WriteAsync(bytes.AsMemory(0, byteCount), _cancellationTokenSource.Token).ConfigureAwait(false);
+
+					InterceptContext ctx = new()
+					{
+						Bytes = bytes,
+						ByteCount = byteCount,
+						Content = content
+					};
+
+					await RunIntercepts(serverIntercepts, ctx).ConfigureAwait(false);
+
+					if (ctx.Action == InterceptAction.Forward)
+					{
+						await incomingStream.WriteAsync(ctx.Bytes.AsMemory(0, ctx.ByteCount), _cancellationTokenSource.Token).ConfigureAwait(false);
+						OnServerMessage?.Invoke(ctx.Content);
+					}
+
 					Array.Clear(bytes);
-					OnServerMessage?.Invoke(content);
 				} while (byteCount != 0 && !DoBreak);
 			}
-			catch (OperationCanceledException) {/**/}
-			catch (IOException)
+			catch (OperationCanceledException) { }
+			catch (IOException) { }
+			finally { DoBreak = true; }
+		}
+
+		private static async Task RunIntercepts(IEnumerable<Func<InterceptContext, Task>> intercepts, InterceptContext ctx)
+		{
+			foreach (Func<InterceptContext, Task> intercept in intercepts)
 			{
-				DoBreak = true;
+				await intercept(ctx).ConfigureAwait(false);
+
+				// Stop pipeline if any intercept blocks
+				if (ctx.Action == InterceptAction.Block) break;
 			}
 		}
 

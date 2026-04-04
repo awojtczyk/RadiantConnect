@@ -5,7 +5,7 @@ using System.Text.Json.Nodes;
 using System.Net.Sockets;
 using RadiantConnect.XMPP;
 
-
+// ReSharper disable AsyncVoidMethod
 // ReSharper disable CheckNamespace
 
 namespace RadiantConnect.SocketServices.XMPP.XMPPManagement
@@ -28,16 +28,21 @@ namespace RadiantConnect.SocketServices.XMPP.XMPPManagement
 
 		private const string ConfigUrl = "https://clientconfig.rpg.riotgames.com";
 		private const string GeoPasUrl = "https://riot-geo.pas.si.riotgames.com/pas/v1/service/chat";
+		internal const string LocalHostUrl = "localhost.devapp.radiantconnect.ca";
 
 		internal int ConfigPort { get; }
 		internal int ChatPort { get; }
 
-		internal InternalProxy(int chatPort)
+		private readonly ValXMPP _valClient;
+
+		internal InternalProxy(int chatPort, ValXMPP xmppClient)
 		{
 			(TcpListener currentTcpListener, int currentPort) = ValXMPP.NewTcpListener();
 			ChatPort = chatPort;
 			ConfigPort = currentPort;
 			currentTcpListener.Stop();
+
+			_valClient = xmppClient;
 
 			_proxyServer.Prefixes.Add($"http://127.0.0.1:{ConfigPort}/");
 			_proxyServer.Start();
@@ -46,6 +51,8 @@ namespace RadiantConnect.SocketServices.XMPP.XMPPManagement
 
 		private async void DoProxy(IAsyncResult result)
 		{
+			_valClient.Certificate = await RadiantCertificateHandler.GetCertificate().ConfigureAwait(false);
+
 			try
 			{
 				HttpListener listener = (HttpListener)result.AsyncState!;
@@ -85,7 +92,7 @@ namespace RadiantConnect.SocketServices.XMPP.XMPPManagement
 					if (riotClientConfig["chat.host"] is not null)
 					{
 						riotChatHost = riotClientConfig["chat.host"]!.GetValue<string>();
-						riotClientConfig["chat.host"] = "127.0.0.1";
+						riotClientConfig["chat.host"] = LocalHostUrl;
 					}
 
 					if (riotClientConfig["chat.port"] is not null)
@@ -116,11 +123,8 @@ namespace RadiantConnect.SocketServices.XMPP.XMPPManagement
 					}
 					catch {/**/}
 
-					affinities?.AsObject().Select(pair => pair.Key).ToList().ForEach(s => affinities[s] = "127.0.0.1");
-
-					if (riotClientConfig["chat.allow_bad_cert.enabled"] is not null)
-						riotClientConfig["chat.allow_bad_cert.enabled"] = true;
-
+					affinities?.AsObject().Select(pair => pair.Key).ToList().ForEach(s => affinities[s] = LocalHostUrl);
+					
 					if (riotChatHost is not null && ChatPort != 0)
 						OnChatPatched?.Invoke(this, new ChatServerEventArgs { ChatHost = riotChatHost, ChatPort = riotChatPort, ChatAffinity = affinity });
 
@@ -142,7 +146,7 @@ namespace RadiantConnect.SocketServices.XMPP.XMPPManagement
 				catch {/**/}
 
 				_proxyServer.BeginGetContext(DoProxy, _proxyServer);
-				message.Dispose();
+				message?.Dispose();
 				responseMessage.Dispose();
 				listenerResponse.Close();
 			}

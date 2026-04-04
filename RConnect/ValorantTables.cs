@@ -135,6 +135,9 @@ namespace RadiantConnect.Methods
 			/// <summary>Killjoy agent.</summary>
 			Killjoy,
 
+			/// <summary> Miks agent. </summary>
+			Miks,
+
 			/// <summary>Neon agent.</summary>
 			Neon,
 
@@ -317,6 +320,7 @@ namespace RadiantConnect.Methods
 			{ "add6443a-41bd-e414-f6ad-e58d267f4e95", "Jett" },
 			{ "601dbbe7-43ce-be57-2a40-4abd24953621", "KAY/O" },
 			{ "1e58de9c-4950-5125-93e9-a0aee9f98746", "Killjoy" },
+			{ "7c8a4701-4de6-9355-b254-e09bc2a34b72", "Miks" }, 
 			{ "bb2a4828-46eb-8cd1-e765-15848195d751", "Neon" },
 			{ "8e253930-4c05-31dd-1b6c-968525494517", "Omen" },
 			{ "eb93336a-449b-9c1b-0a54-a891f7921d69", "Phoenix" },
@@ -352,6 +356,7 @@ namespace RadiantConnect.Methods
 			{ Agent.Jett, "add6443a-41bd-e414-f6ad-e58d267f4e95" },
 			{ Agent.KAY_O, "601dbbe7-43ce-be57-2a40-4abd24953621" },
 			{ Agent.Killjoy, "1e58de9c-4950-5125-93e9-a0aee9f98746" },
+			{ Agent.Miks, "7c8a4701-4de6-9355-b254-e09bc2a34b72" },
 			{ Agent.Neon, "bb2a4828-46eb-8cd1-e765-15848195d751" },
 			{ Agent.Omen, "8e253930-4c05-31dd-1b6c-968525494517" },
 			{ Agent.Phoenix, "eb93336a-449b-9c1b-0a54-a891f7921d69" },

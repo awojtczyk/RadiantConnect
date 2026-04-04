@@ -4,7 +4,7 @@ namespace RadiantConnect.Utilities
 	internal static class InternalHttp
 	{
 		internal static CookieContainer CookieContainer { get; private set; } = new();
-		private static HttpClient InternalClient => LazyClient.Value;
+		internal static HttpClient InternalClient => LazyClient.Value;
 
 		internal static void ClearCookies() => CookieContainer = new CookieContainer();
 

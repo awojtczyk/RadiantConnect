@@ -25,16 +25,26 @@ namespace RadiantConnect.Utilities
 		/// Readiness is inferred by checking process state, file system artifacts,
 		/// and the contents of the Valorant log file.
 		/// </remarks>
-		public static bool ClientIsReady() =>
-			IsValorantProcessRunning() &&
-			Directory.Exists(Path.GetDirectoryName(LogService.LogPath)) &&
-			File.Exists(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "AppData",
-				"Local", "Riot Games", "Riot Client", "Config", "lockfile")) &&
-			File.Exists(LogService.LogPath) &&
-			!LogService.ReadTextFile(LogService.LogPath)
-				.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.RemoveEmptyEntries)
-				.Last()
-				.Contains("Log file closed", StringComparison.Ordinal);
+		public static bool ClientIsReady()
+		{
+			try
+			{
+				return IsValorantProcessRunning() &&
+				       Directory.Exists(Path.GetDirectoryName(LogService.LogPath)) &&
+				       File.Exists(Path.Combine(
+					       Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+					       "Riot Games", "Riot Client", "Config", "lockfile")) &&
+				       File.Exists(LogService.LogPath) &&
+				       !LogService.ReadTextFile(LogService.LogPath)
+					       .Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.RemoveEmptyEntries)
+					       .Last()
+					       .Contains("Log file closed", StringComparison.Ordinal);
+			}
+			catch (InvalidOperationException)
+			{
+				return false;
+			}
+		}
 
 		[SuppressMessage("ReSharper", "LoopCanBeConvertedToQuery")]
 		internal static bool IsValorantProcessRunning()

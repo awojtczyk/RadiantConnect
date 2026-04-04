@@ -1,10 +1,13 @@
 ﻿using RadiantConnect.Services;
-using System.Net.Security;
-using System.Net.Sockets;
-using System.Security.Cryptography;
-using System.Security.Cryptography.X509Certificates;
 using RadiantConnect.SocketServices.XMPP.DataTypes;
 using RadiantConnect.SocketServices.XMPP.XMPPManagement;
+using System.Net.Security;
+using System.Net.Sockets;
+using System.Security.Cryptography.X509Certificates;
+#pragma warning disable CA2000
+#pragma warning disable CA1849
+#pragma warning disable CA5359
+#pragma warning disable CA1031
 #pragma warning disable SYSLIB0057
 
 // Credit to https://github.com/molenzwiebel/Deceive for guide
@@ -23,8 +26,31 @@ namespace RadiantConnect.XMPP
 	/// </remarks>
 	public partial class ValXMPP : IDisposable
 	{
-		private readonly CancellationTokenSource _cancellationTokenSource = new();
+		internal delegate void SocketHandled(XMPPSocketHandle handle);
+		internal XMPPSocketHandle? Handle { get; private set; }
+		internal event SocketHandled? OnSocketCreated;
 
+		internal X509Certificate2? Certificate;
+		private InternalProxy? _proxyServer;
+		private Process? _valorantProcess;
+
+		private readonly CancellationTokenSource? _cancellationTokenSource = new();
+
+		/// <summary>
+		/// Gets the collection of client intercept delegates to be invoked during client operations.
+		/// </summary>
+		/// <remarks>Each delegate in the collection is called with an <see cref="InterceptContext"/> and can perform
+		/// asynchronous processing. The order of invocation matches the order of delegates in the list.</remarks>
+		public IReadOnlyList<Func<InterceptContext, Task>> ClientIntercepts { get; set; } = [];
+
+		/// <summary>
+		/// Gets or sets the collection of server-side interceptors to be invoked during request processing.
+		/// </summary>
+		/// <remarks>Each interceptor is represented as a delegate that receives an <see cref="InterceptContext"/> and
+		/// returns a <see cref="Task"/>. Interceptors are executed in the order they appear in the list. Modifying this
+		/// collection affects the set of interceptors applied to subsequent requests.</remarks>
+		public IReadOnlyList<Func<InterceptContext, Task>> ServerIntercepts { get; set; } = [];
+		
 		/// <summary>
 		/// Raised when the XMPP connection has fully initialized and is ready
 		/// for communication.
@@ -104,26 +130,29 @@ namespace RadiantConnect.XMPP
 		/// Raised when an inbound XMPP message is intercepted by the proxy.
 		/// </summary>
 		public event InternalMessage? OnInboundMessage;
-
-
-		internal delegate void SocketHandled(XMPPSocketHandle handle);
-		internal event SocketHandled? OnSocketCreated;
-
-		internal XMPPSocketHandle Handle { get; private set; } = null!;
-
-		private Process _valorantProcess = null!;
-
+		
 		/// <summary>
 		/// Disposes the socket connection and disconnects from the MITM XMPP server.
 		/// </summary>
 		public void Dispose()
 		{
-			_cancellationTokenSource.Cancel();
-			Handle.Dispose();
-			try { _valorantProcess.Kill(); } catch { /**/ }
-			_cancellationTokenSource.Dispose();
-			_valorantProcess.Dispose();
+			Dispose(true);
 			GC.SuppressFinalize(this);
+		}
+
+		/// <summary>
+		/// Disposes the socket connection and disconnects from the MITM XMPP server.
+		/// </summary>
+		protected virtual void Dispose(bool disposing)
+		{
+			if (!disposing) return;
+			try { _valorantProcess?.Kill(); } catch { /**/ }
+			_cancellationTokenSource?.Cancel();
+			Handle?.Dispose();
+			_proxyServer?.Dispose();
+			Certificate?.Dispose();
+			_cancellationTokenSource?.Dispose();
+			_valorantProcess?.Dispose();
 		}
 
 		/// <summary>
@@ -154,16 +183,7 @@ namespace RadiantConnect.XMPP
 			listener.Start();
 			return (listener, ((IPEndPoint)listener.LocalEndpoint).Port);
 		}
-
-		internal static X509Certificate2 GenerateCertificate()
-		{
-			ECDsa ecdsaValue = ECDsa.Create(ECCurve.NamedCurves.nistP256);
-			CertificateRequest certRequest = new("CN=RadiantConnect", ecdsaValue, HashAlgorithmName.SHA256);
-			certRequest.CertificateExtensions.Add(new X509KeyUsageExtension(X509KeyUsageFlags.DigitalSignature, true));
-			X509Certificate2 generatedCert = certRequest.CreateSelfSigned(DateTimeOffset.Now.AddDays(-1), DateTimeOffset.Now.AddYears(10));
-			return new X509Certificate2(generatedCert.Export(X509ContentType.Pfx));
-		}
-
+		
 		internal static ValorantPresence? HandlePresenceObject(string data, Action<ValorantPresence>? presenceAction = null)
 		{
 			// Pull the <presence> XML out of the stream.
@@ -245,30 +265,47 @@ namespace RadiantConnect.XMPP
 			catch{/**/}
 		}
 		
-		[SuppressMessage("ReSharper", "RemoveRedundantBraces")] // Analyzer wants to remove braces for 'while' statement
+		// ReSharper stinks.
+		[SuppressMessage("ReSharper", "RemoveRedundantBraces")]
+		[SuppressMessage("ReSharper", "MethodHasAsyncOverload")]
+		[SuppressMessage("ReSharper", "ConditionalAccessQualifierIsNonNullableAccordingToAPIContract")]
 		internal async Task HandleClients(TcpListener server, string chatHost, int chatPort)
 		{
-			X509Certificate2 proxyCertificate = new(GenerateCertificate());
+			if (Certificate is null)
+				throw new RadiantConnectXMPPException("Certificate is null in handleClients.");
 
-			while (!_cancellationTokenSource.IsCancellationRequested)
+			while (_cancellationTokenSource is not null && !_cancellationTokenSource.IsCancellationRequested)
 			{
+				TcpClient? incomingClient = null!;
+				SslStream? incomingStream = null!;
+				TcpClient? outgoingClient = null!;
+				SslStream? outgoingStream = null!;
 				try
 				{
-					TcpClient incomingClient = await server.AcceptTcpClientAsync(_cancellationTokenSource.Token).ConfigureAwait(false);
-					SslStream incomingStream = new(incomingClient.GetStream());
-					await incomingStream.AuthenticateAsServerAsync(proxyCertificate).ConfigureAwait(false);
 
-					TcpClient outgoingClient;
+					incomingClient = await server.AcceptTcpClientAsync(_cancellationTokenSource.Token)
+						.ConfigureAwait(false);
+					incomingStream = new SslStream(incomingClient.GetStream());
+					await incomingStream.AuthenticateAsServerAsync(Certificate).ConfigureAwait(false);
+
+
 					while (true)
 					{
-						try { outgoingClient = new TcpClient(chatHost, chatPort); break; }
-						catch (Exception ex) { throw new RadiantConnectXMPPException($"Unable to communicate with chat client. {ex}"); }
+						try
+						{
+							outgoingClient = new TcpClient(chatHost, chatPort);
+							break;
+						}
+						catch (Exception ex)
+						{
+							throw new RadiantConnectXMPPException($"Unable to communicate with chat client. {ex}");
+						}
 					}
 
-					SslStream outgoingStream = new(outgoingClient.GetStream());
+					outgoingStream = new SslStream(outgoingClient.GetStream());
 					await outgoingStream.AuthenticateAsClientAsync(chatHost).ConfigureAwait(false);
 
-					XMPPSocketHandle handler = new(incomingStream, outgoingStream);
+					XMPPSocketHandle handler = new(incomingStream, outgoingStream, ClientIntercepts, ServerIntercepts);
 					OnSocketCreated?.Invoke(handler);
 					Handle = handler;
 					handler.OnClientMessage += (data) => OnClientMessage?.Invoke(data);
@@ -283,13 +320,13 @@ namespace RadiantConnect.XMPP
 					handler.Initiate();
 					Ready = true;
 				}
-				catch (OperationCanceledException) { /**/ }
-				catch (IOException ex)
-				{
-					throw new RadiantConnectXMPPException($"Client closed. {ex}");
-				}
 				catch (Exception ex)
 				{
+					outgoingStream?.Dispose();
+					incomingStream?.Dispose();
+					incomingClient?.Dispose();
+					outgoingClient?.Dispose();
+					Dispose(); 
 					throw new RadiantConnectXMPPException($"Failed to initiate communication. {ex}");
 				}
 			}
@@ -323,11 +360,11 @@ namespace RadiantConnect.XMPP
 
 			(TcpListener currentTcpListener, int currentPort) = NewTcpListener();
 
-			InternalProxy proxyServer = new(currentPort);
+			_proxyServer = new InternalProxy(currentPort, this);
 
 			bool serverHooked = false;
 
-			proxyServer.OnChatPatched += async (_, args) =>
+			_proxyServer.OnChatPatched += async (_, args) =>
 			{
 				if (serverHooked) return;
 				serverHooked = true;
@@ -335,13 +372,13 @@ namespace RadiantConnect.XMPP
 				await HandleClients(currentTcpListener, args.ChatHost, args.ChatPort).ConfigureAwait(false);
 			};
 
-			proxyServer.OnOutboundMessage += data => OnOutboundMessage?.Invoke(data);
-			proxyServer.OnInboundMessage += data => OnInboundMessage?.Invoke(data);
+			_proxyServer.OnOutboundMessage += data => OnOutboundMessage?.Invoke(data);
+			_proxyServer.OnInboundMessage += data => OnInboundMessage?.Invoke(data);
 
 			ProcessStartInfo riotClientStartArgs = new()
 			{
 				FileName = riotClientPath,
-				Arguments = $"--client-config-url=\"http://127.0.0.1:{proxyServer.ConfigPort}\" --launch-product=valorant --launch-patchline={patchLine}"
+				Arguments = $"--client-config-url=\"http://{InternalProxy.LocalHostUrl}:{_proxyServer.ConfigPort}\" --launch-product=valorant --launch-patchline={patchLine}"
 			};
 
 			_valorantProcess = Process.Start(riotClientStartArgs)!;
