@@ -381,7 +381,7 @@ namespace RadiantConnect.XMPP
 				Arguments = $"--client-config-url=\"http://{InternalProxy.LocalHostUrl}:{_proxyServer.ConfigPort}\" --launch-product=valorant --launch-patchline={patchLine}"
 			};
 
-			_valorantProcess = Process.Start(riotClientStartArgs)!;
+			_valorantProcess = Process.Start(riotClientStartArgs);
 
 			if (_valorantProcess is null)
 				throw new RadiantConnectXMPPException("Failed to start Riot Client process.");

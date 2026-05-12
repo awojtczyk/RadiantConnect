@@ -13,26 +13,37 @@ namespace RadiantConnect.SocketServices.XMPP
 
 		internal static async Task<X509Certificate2> GetCertificate()
 		{
-			if (!Directory.Exists(CertificateFolder)) await DownloadCertificate().ConfigureAwait(false);
-			if (!Path.Exists(CertificateLocation)) await DownloadCertificate().ConfigureAwait(false);
+			const int maxAttempts = 3;
+			int attempts = 0;
 
-			X509Certificate2 certificate = new (CertificateLocation);
-
-			if (
-				!certificate.HasPrivateKey ||
-				certificate.NotAfter < DateTime.UtcNow ||
-				certificate.NotBefore > DateTime.UtcNow ||
-				!IsTrustedCa(certificate) ||
-				!IsRevoked(certificate) ||
-				!IsCertificateValidForSubdomain(certificate, InternalProxy.LocalHostUrl)
-			) await DownloadCertificate().ConfigureAwait(false);
-
-			if (!await ValidateRedirect().ConfigureAwait(false))
+			while (true)
 			{
-				throw new InvalidOperationException($"Unable to proxy '{InternalProxy.LocalHostUrl}' please add the follow records to your hosts file:\n\n`127.0.0.1 {InternalProxy.LocalHostUrl}`");
-			}
+				if (!Directory.Exists(CertificateFolder)) await DownloadCertificate().ConfigureAwait(false);
+				if (!File.Exists(CertificateLocation)) await DownloadCertificate().ConfigureAwait(false);
 
-			return certificate;
+				X509Certificate2 certificate = new(CertificateLocation);
+
+				if (!certificate.HasPrivateKey ||
+				    certificate.NotAfter < DateTime.UtcNow ||
+				    certificate.NotBefore > DateTime.UtcNow ||
+				    !IsTrustedCa(certificate) ||
+				    !IsNotRevoked(certificate) ||
+				    !IsCertificateValidForSubdomain(certificate, InternalProxy.LocalHostUrl))
+				{
+					if (++attempts >= maxAttempts)
+						throw new RadiantConnectXMPPException($"Certificate validation failed after {maxAttempts} attempts.");
+
+					await DownloadCertificate().ConfigureAwait(false);
+					continue;
+				}
+
+				if (!await ValidateRedirect().ConfigureAwait(false))
+				{
+					throw new InvalidOperationException($"Unable to proxy '{InternalProxy.LocalHostUrl}' please add the follow records to your hosts file:\n\n`127.0.0.1 {InternalProxy.LocalHostUrl}`");
+				}
+
+				return certificate;
+			}
 		}
 
 		private static async Task<bool> ValidateRedirect()
@@ -85,7 +96,7 @@ namespace RadiantConnect.SocketServices.XMPP
 
 		private static bool IsTrustedCa(X509Certificate2 certificate)
 		{
-			X509Chain chain = new();
+			using X509Chain chain = new();
 
 			chain.ChainPolicy.RevocationMode = X509RevocationMode.Online;
 			chain.ChainPolicy.RevocationFlag = X509RevocationFlag.ExcludeRoot;
@@ -97,7 +108,7 @@ namespace RadiantConnect.SocketServices.XMPP
 			return isValid && chain.ChainStatus.Length == 0;
 		}
 
-		private static bool IsRevoked(X509Certificate2 certificate)
+		private static bool IsNotRevoked(X509Certificate2 certificate)
 		{
 			X509Chain chain = new();
 
