@@ -38,8 +38,8 @@ namespace RadiantConnect.Authentication.DriverRiotAuth.Handlers
 
 			switch (browserProcesses.Count)
 			{
-				case 0 when !killBrowser:
-					throw new RadiantConnectException($"{browserProcesses.First().ProcessName} is currently running, it must be closed or Initialize must be started with 'true'");
+				case >0 when !killBrowser:
+					throw new RadiantConnectException($"{browserProcesses.FirstOrDefault()?.ProcessName} is currently running, it must be closed or Initialize must be started with 'true'");
 				case >0 when killBrowser:
 					browserProcesses.ToList().ForEach(x => x.Kill());
 					break;
